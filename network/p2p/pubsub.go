@@ -58,7 +58,7 @@ const TXTopicName = "algotx01"
 
 const incomingThreads = 20 // matches to number wsNetwork workers
 
-func makePubSub(ctx context.Context, cfg config.Local, host host.Host, opts ...pubsub.Option) (*pubsub.PubSub, error) {
+func makePubSub(ctx context.Context, cfg config.Local, host host.Host, scoreInspector func(map[peer.ID]*pubsub.PeerScoreSnapshot), opts ...pubsub.Option) (*pubsub.PubSub, error) {
 	//defaultParams := pubsub.DefaultGossipSubParams()
 
 	options := []pubsub.Option{
@@ -101,6 +101,7 @@ func makePubSub(ctx context.Context, cfg config.Local, host host.Host, opts ...p
 		pubsub.WithMessageSignaturePolicy(pubsub.StrictNoSign),
 		// pubsub.WithValidateThrottle(cfg.TxBacklogSize),
 		pubsub.WithValidateWorkers(incomingThreads),
+        pubsub.WithPeerScoreInspect(scoreInspector, 10*time.Second),
 	}
 
 	options = append(options, opts...)

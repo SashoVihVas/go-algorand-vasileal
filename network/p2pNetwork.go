@@ -18,6 +18,7 @@ package network
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -344,12 +345,25 @@ func NewP2PNetwork(log logging.Logger, cfg config.Local, datadir string, phonebo
 	}
 
 	net.httpServer = p2p.MakeHTTPServer(h)
+	net.httpServer.RegisterHTTPHandlerFunc("/peer-scores", net.getPeerScoresHandler())
+
 
 	if err = net.setup(); err != nil {
 		return nil, err
 	}
 
 	return net, nil
+}
+
+func (n *P2PNetwork) getPeerScoresHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		scores := n.service.GetPeerScores(p2p.TXTopicName)
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(scores); err != nil {
+			n.log.Warnf("error encoding peer scores: %v", err)
+			http.Error(w, "error encoding peer scores", http.StatusInternalServerError)
+		}
+	}
 }
 
 func (n *P2PNetwork) setup() error {

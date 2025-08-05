@@ -74,6 +74,7 @@ type Service interface {
 
 	// GetHTTPClient returns a rate-limiting libp2p-streaming http client that can be used to make requests to the given peer
 	GetHTTPClient(addrInfo *peer.AddrInfo, connTimeStore limitcaller.ConnectionTimeStore, queueingTimeout time.Duration) (*http.Client, error)
+	GetPeerScores(topic string) map[peer.ID]float64
 }
 
 // serviceImpl manages integration with libp2p and implements the Service interface
@@ -84,6 +85,9 @@ type serviceImpl struct {
 	streams    *streamManager
 	pubsub     *pubsub.PubSub
 	privKey    crypto.PrivKey
+	
+	peerScores    map[peer.ID]float64
+    peerScoresMux deadlock.RWMutex
 
 	topics   map[string]*pubsub.Topic
 	topicsMu deadlock.RWMutex
@@ -232,19 +236,25 @@ func MakeService(ctx context.Context, log logging.Logger, cfg config.Local, h ho
 		opt(&pubsubOpts)
 	}
 
-	ps, err := makePubSub(ctx, cfg, h, pubsubOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return &serviceImpl{
-		log:        log,
-		listenAddr: listenAddr,
-		host:       h,
-		streams:    sm,
-		pubsub:     ps,
-		privKey:    h.Peerstore().PrivKey(h.ID()),
-		topics:     make(map[string]*pubsub.Topic),
-	}, nil
+    s := &serviceImpl{
+        log:          log,
+        listenAddr:   listenAddr,
+        host:         h,
+        streams:      sm,
+        privKey:      h.Peerstore().PrivKey(h.ID()),
+        peerScores:   make(map[peer.ID]float64), // Initialize the map
+        topics:       make(map[string]*pubsub.Topic),
+    }
+
+    // MODIFY the makePubSub call to pass the callback method
+    ps, err := makePubSub(ctx, cfg, h, s.updatePeerScores, pubsubOpts...)
+    if err != nil {
+        return nil, err
+    }
+
+    s.pubsub = ps
+    return s, nil
+
 }
 
 // Start starts the P2P service
@@ -443,4 +453,36 @@ func (s *serviceImpl) NetworkNotify(n network.Notifiee) {
 // NetworkStopNotify unregisters a notifiee with the host's network
 func (s *serviceImpl) NetworkStopNotify(n network.Notifiee) {
 	s.host.Network().StopNotify(n)
+}
+func (s *serviceImpl) GetPeerScores(topic string) map[peer.ID]float64 {
+    s.peerScoresMux.RLock()
+    defer s.peerScoresMux.RUnlock()
+
+    peersInTopic := s.pubsub.ListPeers(topic)
+    topicPeerSet := make(map[peer.ID]struct{}, len(peersInTopic))
+    for _, p := range peersInTopic {
+        topicPeerSet[p] = struct{}{}
+    }
+
+    scores := make(map[peer.ID]float64)
+    // Filter the globally-inspected scores to only include peers in the requested topic.
+    for p, score := range s.peerScores {
+        if _, ok := topicPeerSet[p]; ok {
+            scores[p] = score
+        }
+    }
+    return scores
+}
+
+func (s *serviceImpl) updatePeerScores(scores map[peer.ID]*pubsub.PeerScoreSnapshot) {
+    s.peerScoresMux.Lock()
+    defer s.peerScoresMux.Unlock()
+
+    // Rebuild the map from the latest snapshot.
+    s.peerScores = make(map[peer.ID]float64)
+    for p, sshot := range scores {
+        if sshot != nil {
+            s.peerScores[p] = sshot.Score
+        }
+    }
 }
