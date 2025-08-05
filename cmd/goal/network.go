@@ -19,9 +19,12 @@ package main
 import (
 	_ "embed"
 	"fmt"
+	"encoding/json"
 	"io"
+	"io/ioutil"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -71,6 +74,9 @@ func init() {
 
 	networkCmd.AddCommand(networkDeleteCmd)
 	networkDeleteCmd.MarkFlagRequired("rootdir")
+
+	networkCmd.AddCommand(networkPeerScoresCmd)
+	networkPeerScoresCmd.MarkFlagRequired("rootdir")
 
 	networkCmd.AddCommand(networkPregenCmd)
 	networkPregenCmd.Flags().StringVarP(&networkTemplateFile, "template", "t", "", "Specify the path to the template file for the network")
@@ -282,6 +288,82 @@ var networkDeleteCmd = &cobra.Command{
 		}
 		reportInfof(infoNetworkDeleted, networkRootDir)
 	},
+}
+
+var networkPeerScoresCmd = &cobra.Command{
+	Use:   "peerscores",
+	Short: "Prints the peer scores for all nodes in a deployed private network",
+	Long:  `Prints the peer scores for all nodes in a deployed private network.`,
+	Args:  validateNoPosArgsFn,
+	Run: func(cmd *cobra.Command, _ []string) {
+		network, binDir := getNetworkAndBinDir()
+
+		statuses := network.NodesStatus(binDir)
+		var nodeDirs []string
+		for dir := range statuses {
+			nodeDirs = append(nodeDirs, dir)
+		}
+
+		for _, dir := range nodeDirs {
+			scoresFilePath := filepath.Join(dir, "peerscores.json")
+			data, err := ioutil.ReadFile(scoresFilePath)
+			if err != nil {
+				if os.IsNotExist(err) {
+					reportInfof("\n[%s]\n  No peer scores file found.\n", dir)
+				} else {
+					reportErrorf("\n[%s]\n ** Error reading peer scores file: %v **\n", dir, err)
+				}
+				continue
+			}
+
+			// This is the corrected part. We now unmarshal into a variable
+			// 'allScores' which has the correct type that 'makePeerScoresString' expects.
+			var allScores map[string]map[string]float64
+			err = json.Unmarshal(data, &allScores)
+			if err != nil {
+				reportErrorf("\n[%s]\n ** Error unmarshaling peer scores: %v **\n", dir, err)
+				continue
+			}
+
+			reportInfof("\n[%s]\n%s", dir, makePeerScoresString(allScores))
+		}
+		fmt.Println()
+	},
+}
+
+func makePeerScoresString(allScores map[string]map[string]float64) string {
+	if len(allScores) == 0 {
+		return "  No peer scores available.\n"
+	}
+
+	var sb strings.Builder
+
+	var timestamps []string
+	for ts := range allScores {
+		timestamps = append(timestamps, ts)
+	}
+	sort.Strings(timestamps)
+
+	for _, ts := range timestamps {
+		sb.WriteString(fmt.Sprintf("Timestamp: %s\n", ts))
+		scores := allScores[ts]
+
+		if len(scores) == 0 {
+			sb.WriteString("  No peer scores for this timestamp.\n")
+			continue
+		}
+
+		var peerIDs []string
+		for peerID := range scores {
+			peerIDs = append(peerIDs, peerID)
+		}
+		sort.Strings(peerIDs)
+
+		for _, peerID := range peerIDs {
+			sb.WriteString(fmt.Sprintf("  %s: %f\n", peerID, scores[peerID]))
+		}
+	}
+	return sb.String()
 }
 
 var networkPregenCmd = &cobra.Command{

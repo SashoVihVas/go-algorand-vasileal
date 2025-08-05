@@ -20,6 +20,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
+	"path/filepath"
 	"net/http"
 	"strings"
 	"sync"
@@ -97,6 +99,7 @@ type P2PNetwork struct {
 	// supportedProtocolVersions defines versions supported by this network.
 	// Should be used instead of a global network.SupportedProtocolVersions for network/peers configuration
 	supportedProtocolVersions []string
+	datadir                   string
 
 	// protocolVersion is an actual version announced as ProtocolVersionHeader
 	protocolVersion string
@@ -247,6 +250,7 @@ func NewP2PNetwork(log logging.Logger, cfg config.Local, datadir string, phonebo
 			peerConnectionsUpdateInterval: time.Duration(cfg.PeerConnectionsUpdateInterval) * time.Second,
 			lastPeerConnectionsSent:       time.Now(),
 		},
+		datadir:       datadir,
 	}
 
 	net.ctx, net.ctxCancel = context.WithCancel(context.Background())
@@ -447,6 +451,10 @@ func (n *P2PNetwork) Start() error {
 	if n.capabilitiesDiscovery != nil {
 		n.capabilitiesDiscovery.AdvertiseCapabilities(n.nodeInfo.Capabilities()...)
 	}
+
+	// Start a goroutine to periodically dump peer scores to a file.
+	n.wg.Add(1)
+	go n.dumpPeerScoresLoop()
 
 	return nil
 }
@@ -1162,5 +1170,62 @@ func (n *P2PNetwork) txTopicValidator(ctx context.Context, peerID peer.ID, msg *
 	default:
 		n.log.Warnf("handler returned invalid action %d", outmsg.Action)
 		return pubsub.ValidationIgnore
+	}
+}
+
+func (n *P2PNetwork) dumpPeerScoresLoop() {
+	defer n.wg.Done()
+	ticker := time.NewTicker(10 * time.Second) // dump every 10 seconds
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-n.ctx.Done():
+			return
+		case <-ticker.C:
+			n.dumpPeerScores()
+		}
+	}
+}
+
+func (n *P2PNetwork) dumpPeerScores() {
+	scores := n.service.GetPeerScores(p2p.TXTopicName)
+	if len(scores) == 0 {
+		return
+	}
+
+	// Read existing data
+	filePath := filepath.Join(n.datadir, "peerscores.json")
+	var allScores map[string]map[string]float64
+	data, err := ioutil.ReadFile(filePath)
+	if err == nil {
+		err = json.Unmarshal(data, &allScores)
+		if err != nil {
+			n.log.Warnf("failed to unmarshal existing peer scores, starting fresh: %v", err)
+			allScores = make(map[string]map[string]float64)
+		}
+	} else {
+		allScores = make(map[string]map[string]float64)
+	}
+
+	stringScores := make(map[string]float64)
+	for p, s := range scores {
+		stringScores[p.String()] = s
+	}
+
+	// Add new scores with a timestamp
+	timestamp := time.Now().UTC().Format(time.RFC3339)
+	allScores[timestamp] = stringScores
+
+	// Marshal and write back to the file
+	data, err = json.MarshalIndent(allScores, "", "  ")
+	if err != nil {
+		n.log.Warnf("failed to marshal peer scores: %v", err)
+		return
+	}
+
+	err = ioutil.WriteFile(filePath, data, 0644)
+	if err != nil {
+		n.log.Warnf("failed to write peer scores to file: %v", err)
 	}
 }
