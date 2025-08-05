@@ -483,6 +483,7 @@ func (s *serviceImpl) updatePeerScores(scores map[peer.ID]*pubsub.PeerScoreSnaps
     for p, sshot := range scores {
         if sshot != nil {
             s.peerScores[p] = sshot.Score
+			s.log.Infof("PeerScore Snapshot for %s: TotalScore=%.4f, AppSpecificScore=%.4f", p, sshot.Score, sshot.AppSpecificScore)
         }
     }
 }
